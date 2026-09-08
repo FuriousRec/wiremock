@@ -55,55 +55,57 @@ public abstract class AbstractRequestHandler implements RequestHandler, RequestE
 
   @Override
   public void handle(Request request, HttpResponder httpResponder, ServeEvent originalServeEvent) {
-    ServeEvent serveEvent = ServeEvent.of(request);
-    Request processedRequest = request;
+    try {
+      ServeEvent serveEvent = ServeEvent.of(request);
+      Request processedRequest = request;
 
-    if (filterProcessor.hasAnyFilters()) {
-      RequestFilterAction requestFilterAction = filterProcessor.processFilters(request, serveEvent);
+      if (filterProcessor.hasAnyFilters()) {
+        RequestFilterAction requestFilterAction = filterProcessor.processFilters(request, serveEvent);
 
-      if (requestFilterAction instanceof ContinueAction continueAction) {
-        processedRequest = continueAction.getRequest();
-        serveEvent = handleRequest(serveEvent.replaceRequest(processedRequest));
+        if (requestFilterAction instanceof ContinueAction continueAction) {
+          processedRequest = continueAction.getRequest();
+          serveEvent = handleRequest(serveEvent.replaceRequest(processedRequest));
+        } else {
+          serveEvent =
+              serveEvent.withResponseDefinition(
+                  ((StopAction) requestFilterAction).getResponseDefinition());
+        }
       } else {
-        serveEvent =
-            serveEvent.withResponseDefinition(
-                ((StopAction) requestFilterAction).getResponseDefinition());
+        serveEvent = handleRequest(serveEvent);
       }
-    } else {
-      serveEvent = handleRequest(serveEvent);
+
+      ResponseDefinition responseDefinition = serveEvent.getResponseDefinition();
+      Response response = responseRenderer.render(serveEvent);
+      response = Response.Builder.like(response).protocol(request.getProtocol()).build();
+      serveEvent = serveEvent.complete(response, dataTruncationSettings);
+
+      if (logRequests()) {
+        notifier()
+            .info(
+                "Request received:\n"
+                    + formatRequest(request)
+                    + "\n\nMatched response definition:\n"
+                    + responseDefinition
+                    + "\n\nResponse:\n"
+                    + response);
+      }
+
+      for (RequestListener listener : listeners) {
+        listener.requestReceived(request, response);
+      }
+
+      beforeResponseSent(serveEvent, response);
+
+      serveEvent.beforeSend();
+
+      Map<String, Object> attributes = Map.of(ORIGINAL_SERVE_EVENT_KEY, serveEvent);
+      httpResponder.respond(request, response, attributes);
+
+      serveEvent.afterSend();
+      afterResponseSent(serveEvent, response);
+    } finally {
+      RequestCache.onRequestEnd();
     }
-
-    ResponseDefinition responseDefinition = serveEvent.getResponseDefinition();
-    Response response = responseRenderer.render(serveEvent);
-    response = Response.Builder.like(response).protocol(request.getProtocol()).build();
-    serveEvent = serveEvent.complete(response, dataTruncationSettings);
-
-    if (logRequests()) {
-      notifier()
-          .info(
-              "Request received:\n"
-                  + formatRequest(request)
-                  + "\n\nMatched response definition:\n"
-                  + responseDefinition
-                  + "\n\nResponse:\n"
-                  + response);
-    }
-
-    for (RequestListener listener : listeners) {
-      listener.requestReceived(request, response);
-    }
-
-    beforeResponseSent(serveEvent, response);
-
-    serveEvent.beforeSend();
-
-    Map<String, Object> attributes = Map.of(ORIGINAL_SERVE_EVENT_KEY, serveEvent);
-    httpResponder.respond(request, response, attributes);
-
-    serveEvent.afterSend();
-    afterResponseSent(serveEvent, response);
-
-    RequestCache.onRequestEnd();
   }
 
   protected String formatRequest(Request request) {
